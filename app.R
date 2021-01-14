@@ -2,7 +2,7 @@
 library(dplyr)
 library(tidyr)
 library(ggplot2)
-library(linkagemapping)
+# library(linkagemapping)
 library(shiny)
 library(DT)
 library(plotly)
@@ -11,98 +11,40 @@ library(curl)
 library('R.utils')
 library(RSQLite)
 
-# load RIAIL regressed phenotype data to get possible condition/traits
-data("eQTLpeaks")
-data("probe_info")
-allRIAILsregressed <- fst::read_fst("data/allRIAILsregressed.fst")
+drugs <- c('2percDMSO','3percEthanol','cisplatin250','cisplatin500','vincristine',
+           'bleomycin','G418','daunorubicin','docetaxel','etoposide','irinotecan',
+           'dactinomycin','K12','OP50TRP','OP50B12','OP50','DA837','DA1877','HT115',
+           'JUb71','JUb85','JUb87','abamectin','albendazole','amsacrine','bicuculline',
+           'chlorpyrifos','fenbendazole-15','fenbendazole-30','mebendazole','MPTP',
+           'arsenictrioxide','copper','deiquat','FUdR','nickel','silver','zinc',
+           'chlorpromazine','monepantel','praziquantel','thymol','chlorothanil',
+           'fluoxetine-125','thiabendazole-625','thiabendazole-125')
 
-# pxgplot with fake cross object
-pxgplot_fake <- function (cross, map, parent = "N2xCB4856", tsize = 20) {
-    peaks <- map %>% 
-        na.omit() %>%
-        dplyr::group_by(iteration) %>% 
-        dplyr::filter(!is.na(var_exp)) %>% 
-        dplyr::do(head(., n = 1))
-    if (nrow(peaks) == 0) {
-        stop("No QTL identified")
-    }
-    uniquemarkers <- gsub("-", "\\.", unique(peaks$marker))
-    colnames(cross$pheno) <- gsub("-", "\\.", colnames(cross$pheno))
-    pheno <- cross$pheno %>% dplyr::select_(map$trait[1])
-    
-    # get geno
-    uniquechr <- unique(stringr::str_split_fixed(uniquemarkers, "_", 2)[,1])
-    
-    if(length(uniquechr) > 1) {
-        geno <- data.frame(cross$geno[[uniquechr[1]]])
-        for(i in 2:length(uniquechr)) {
-            geno <- cbind(geno, cross$geno[[uniquechr[i]]])
-        }
-    } else {
-        geno <- data.frame(cross$geno[[uniquechr]])
-    }
-    
-    geno <- geno %>%
-        dplyr::select(which(colnames(.) %in% uniquemarkers)) %>% 
-        data.frame(., pheno)
-    colnames(geno)[1:(ncol(geno) - 1)] <- sapply(colnames(geno)[1:(ncol(geno) -  1)],
-                                                 function(marker) {paste(unlist(peaks[peaks$marker == gsub("\\.", "-", marker), c("chr", "pos")]), collapse = ":") })
-    colnames(geno)[ncol(geno)] <- "pheno"
-    split <- tidyr::gather(geno, marker, genotype, -pheno)
-    split$genotype <- sapply(split$genotype, function(x) {
-        if (is.na(x)) {
-            return(NA)
-        }
-        if (parent == "N2xCB4856") {
-            if (x == 1) {
-                "N2"
-            }
-            else {
-                "CB4856"
-            }
-        }
-    })
-    split$genotype <- factor(split$genotype, levels = c("N2", "CB4856", "LSJ2", "AF16", "HK104"))
-    split <- split %>% 
-        tidyr::drop_na(genotype) %>% 
-        dplyr::mutate(chr = (as.character(stringr::str_split_fixed(marker, ":", 2)[, 1])), 
-                      pos = as.numeric(as.character(stringr::str_split_fixed(marker, ":", 2)[, 2]))) %>% 
-        dplyr::arrange(chr, pos)
-    split$marker <- factor(split$marker, levels = unique(split$marker))
-    ggplot2::ggplot(split) + ggplot2::scale_fill_manual(values = c(N2 = "orange", CB4856 = "blue", LSJ2 = "green", AF16 = "indianred", HK104 = "gold")) + 
-        ggplot2::geom_jitter(ggplot2::aes(x = genotype, y = pheno), alpha = 0.8, size = 0.5, width = 0.1) + 
-        ggplot2::geom_boxplot(ggplot2::aes(x = genotype, y = pheno, fill = genotype), outlier.shape = NA, alpha = 0.8) + 
-        ggplot2::facet_wrap(~marker, ncol = 5) + ggplot2::theme_bw(tsize) + 
-        ggplot2::theme(axis.text.x = ggplot2::element_text(face = "bold", color = "black"), 
-                       axis.text.y = ggplot2::element_text(face = "bold", color = "black"), 
-                       axis.title.x = ggplot2::element_text(face = "bold", color = "black", vjust = -0.3), 
-                       axis.title.y = ggplot2::element_text(face = "bold", color = "black"), 
-                       strip.text.x = ggplot2::element_text(face = "bold", color = "black"), 
-                       strip.text.y = ggplot2::element_text(face = "bold", color = "black"), 
-                       plot.title = ggplot2::element_text(face = "bold", vjust = 1), 
-                       legend.position = "none", 
-                       panel.background = ggplot2::element_rect(color = "black", size = 1.2)) + 
-        ggplot2::ggtitle(peaks$trait[1]) + 
-        ggplot2::labs(x = "Genotype", y = "Phenotype")
-}
+trts <- c('cv.EXT','cv.TOF','f.ad','f.L1','f.L2L3','f.L4','iqr.EXT','iqr.TOF',
+          'mean.EXT','mean.norm.EXT','mean.TOF','median.EXT','median.norm.EXT',
+          'median.TOF','n','norm.n','q10.EXT','q10.norm.EXT','q10.TOF','q25.EXT',
+          'q25.norm.EXT','q25.TOF','q75.EXT','q75.norm.EXT','q75.TOF','q90.EXT',
+          'q90.norm.EXT','q90.TOF','var.EXT','var.TOF')
 
 
 # Define UI for application
 ui <- fluidPage(
    
    # Application title
-   titlePanel("Linkage Mapping Analysis - Andersen Lab"),
+   titlePanel("GWA Analysis - Andersen Lab"),
    
    # no sidebar layout
    shiny::wellPanel(
        # input well
        shiny::fluidRow(
            # conditions
-           column(3, shiny::selectInput(inputId = "drug_input", label = "Condition:", choices = sort(unique(allRIAILsregressed$condition)), selected = NULL)),
+           column(3, shiny::selectInput(inputId = "drug_input", label = "Condition:", choices = sort(drugs), selected = NULL)),
            # set
            column(2, shiny::radioButtons(inputId = "set_input", label = "RIAIL set:", choices = c(1, 2), selected = 2, inline = TRUE)),
            # trait
-           column(3, shiny::selectInput(inputId = "trait_input", label = "Trait:", choices = c("", unique(allRIAILsregressed$trait)), selected = NULL)),
+           # columm(3, shiny::uiOutput("trait")),
+           # this is not accurate, doesn't have traits for no QTL 
+           column(3, shiny::selectInput(inputId = "trait_input", label = "Trait:", choices = c("", sort(trts)), selected = NULL)),
            # qtl marker
            column(3, shiny::uiOutput("qtl"))
        ),
@@ -114,7 +56,6 @@ ui <- fluidPage(
   mainPanel(width = 12,
             
      shiny::tabsetPanel(type = "tabs", id = "test",
-                        # shiny::tabPanel("QTL Analysis: Condition", shiny::plotOutput("genplot", height = "800px")),
                         shiny::tabPanel("QTL Analysis: Condition", 
                                         shiny::uiOutput("cond_plot")),
                         shiny::tabPanel("QTL Analysis: Trait",   
@@ -166,19 +107,21 @@ server <- function(input, output) {
         
         # I guess fst can't read directly from internet... this is my workaround for now.
         tmp_file <- tempfile()
-        fst_url <- glue::glue("https://raw.githubusercontent.com/katiesevans/LM-shiny/main/drug_data/{cond}-GWER.chromosomal.annotated.fst")
+        fst_url <- glue::glue("https://raw.githubusercontent.com/katiesevans/GWAS-shiny/main/data/mappings/96strain/{d}_pmd.fst")
         curl::curl_download(fst_url, tmp_file, mode="wb")
         
         # files
-        annotatedmap <- fst::read_fst(tmp_file)
+        annotatedmap <- fst::read_fst(tmp_file) %>%
+            dplyr::distinct()
         peaks <- annotatedmap %>%
-            na.omit()
+            dplyr::filter(peak_id == T) %>%
+            dplyr::distinct()
         list(annotatedmap, peaks)
         
     })
     
     #############################
-    ####    ALL LOD PLOT     ####
+    ####    ALL PEAK PLOT    ####
     #############################
     # plot alllodplots for each condition (or multiple conditions)
     output$cond_plot <- shiny::renderUI({
@@ -186,28 +129,19 @@ server <- function(input, output) {
         
         # get drug
         cond <- input$drug_input
-        strainset <- input$set_input
-        
+
         # load data
         peaks <- loaddata()[[2]]
         
         # plot all traits
         newmap <- peaks %>%
-            dplyr::filter(set == strainset)%>%
-            arrange(desc(trait)) %>%
-            dplyr::mutate(n2res = ifelse(eff_size < 0, "yes", "no"),
-                          ci_l_pos = as.numeric(ci_l_pos),
-                          ci_r_pos = as.numeric(ci_r_pos),
-                          pos = as.numeric(pos),
-                          lod = as.numeric(lod),
-                          condition = cond) %>%
-            dplyr::mutate(trait = stringr::str_split_fixed(trait, paste0(cond, "."), 2)[,2])
+            arrange(desc(trait))
         
         newmap$trait <- factor(newmap$trait, levels = unique(newmap$trait))
         
         
         # get chromosome lengths
-        chr_lens <- data.frame(chr = c("I", "II", "III", "IV", "V", "X"), 
+        chr_lens <- data.frame(CHROM = c("I", "II", "III", "IV", "V", "X"), 
                                start = rep(1,6), 
                                end = c(14972282,15173999,13829314,17450860,20914693,17748731),
                                condition = newmap$condition[1],
@@ -220,14 +154,13 @@ server <- function(input, output) {
             
             # plot
             ggplot(newmap)+
-                aes(x=pos/1E6, y=trait)+
+                aes(x=peakPOS/1E6, y=trait)+
                 theme_bw() +
-                viridis::scale_fill_viridis(name = "LOD") + 
-                viridis::scale_color_viridis(name = "LOD") +
-                geom_segment(aes(x = ci_l_pos/1e6, y = trait, xend = ci_r_pos/1e6, yend = trait, color = lod), size = 2, alpha = 1) +
+                viridis::scale_fill_viridis(name = "log10(p)") + 
+                viridis::scale_color_viridis(name = "log10(p)") +
+                geom_segment(aes(x = startPOS/1e6, y = trait, xend = endPOS/1e6, yend = trait, color = log10p), size = 2, alpha = 1) +
                 geom_segment(data=chr_lens, aes(x =  start/1e6, xend = end/1e6, y = trait, yend=trait), color='transparent', size =0.1) +
-                geom_point(aes(fill = lod, shape = n2res), color = "black",size = 3, alpha = 1)+
-                scale_shape_manual(values = c("yes" = 24, "no" = 25)) +
+                geom_point(aes(color = log10p),size = 3, alpha = 1)+
                 xlab("Genomic position (Mb)") + ylab("") +
                 guides(shape = FALSE) +
                 theme(axis.text.x = element_text(size=10, face="bold", color="black"),
@@ -244,17 +177,16 @@ server <- function(input, output) {
                       strip.text.y = element_text(size=12, face="bold", color="black", angle = 0),
                       strip.background = element_rect(colour = "black", fill = "white", size = 0.75, linetype = "solid"),
                       plot.title = element_text(size=12, face="bold")) +
-                facet_grid(condition ~ chr, scales = "free_x", space = "free")
+                facet_grid(condition ~ CHROM, scales = "free_x", space = "free")
         })
         
         ############## PEAKS DF ###############
         output$peaksdf <- DT::renderDataTable({
             newmap %>%
-                dplyr::select(chr, pos, trait, lod, var_exp, eff_size, ci_l_pos, ci_r_pos) %>%
+                dplyr::select(CHROM, POS, trait, log10p, var.exp, startPOS, endPOS) %>%
                 dplyr::arrange(desc(trait)) %>%
-                dplyr::mutate(lod = round(lod, digits = 4),
-                              var_exp = round(var_exp, digits = 4),
-                              eff_size = round(eff_size, digits = 4))
+                dplyr::mutate(log10p = round(log10p, digits = 4),
+                              var.exp = round(var.exp, digits = 4))
         })
         
         removeModal()
@@ -270,7 +202,7 @@ server <- function(input, output) {
     })
 
     #############################
-    ####    LOD/PXG PLOT     ####
+    ####      MAN PLOT       ####
     #############################
     # plot linkage defaults (LOD, pxg, riail pheno)
     output$allplots <- shiny::renderUI({
@@ -280,7 +212,6 @@ server <- function(input, output) {
         # define variables
         trt <- input$trait_input
         cond <- input$drug_input
-        strainset <- input$set_input
 
         # load data
         annotatedmap <- loaddata()[[1]]
