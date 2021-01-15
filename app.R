@@ -249,8 +249,8 @@ server <- function(input, output) {
             # plot
             barplot <- wipheno %>%
                 ggplot2::ggplot(.) +
-                ggplot2::aes(x = strain, y = norm_pheno) +
-                ggplot2::geom_bar(stat = "identity", fill = col, color = col) +
+                ggplot2::aes(x = strain, y = norm_pheno, fill = col, color = col) +
+                ggplot2::geom_bar(stat = "identity") +
                 ggplot2::scale_fill_manual(values = c("N2" = "orange", "CB" = "blue", "WI" = "grey")) +
                 ggplot2::scale_color_manual(values = c("N2" = "orange", "CB" = "blue", "WI" = "grey")) +
                 theme_bw(15) +
