@@ -44,9 +44,7 @@ ui <- fluidPage(
            # conditions
            column(3, shiny::selectInput(inputId = "drug_input", label = "Condition:", choices = sort(drugs), selected = NULL)),
            # trait
-           # columm(3, shiny::uiOutput("trait")),
-           # this is not accurate, doesn't have traits for no QTL 
-           column(3, shiny::selectInput(inputId = "trait_input", label = "Trait:", choices = c("", sort(trts)), selected = NULL)),
+           column(3, shiny::uiOutput("choose_trait")),
            # qtl marker
            column(3, shiny::uiOutput("qtl"))
        ),
@@ -202,7 +200,23 @@ server <- function(input, output) {
         
         
     })
-
+    
+    #############################
+    ###     CHOOSE TRAIT      ###
+    #############################
+    
+    output$choose_trait <- shiny::renderUI({
+        # get inputs
+        cond <- input$drug_input
+        
+        peaks <- loaddata()[[2]]
+        
+        # trait input
+        shiny::selectInput(inputId = "trait_input", label = "Trait:", choices = c("", sort(unique(peaks$trait))), selected = NULL)
+        
+        
+    })
+    
     #############################
     ####      MAN PLOT       ####
     #############################
@@ -216,7 +230,9 @@ server <- function(input, output) {
         cond <- input$drug_input
 
         # load data
-        annotatedmap <- loaddata()[[1]]
+        all_data <- loaddata()
+        annotatedmap <- all_data[[1]]
+        peaks <- all_data[[2]]
 
         # filter data
         traitmap <- annotatedmap %>%
@@ -268,7 +284,7 @@ server <- function(input, output) {
         
         ################# MAN & PXG PLOTS ###################
         output$manhatplot <- shiny::renderPlot({
-            manp <- traitmap %>%
+            traitmap %>%
                 dplyr::filter(CHROM != "MtDNA") %>%
                 dplyr::mutate(aboveEIGEN = dplyr::case_when(aboveBF == T ~ "2",
                                                             aboveEIGEN == T ~ "1",
@@ -298,7 +314,9 @@ server <- function(input, output) {
                     panel.background = ggplot2::element_rect(color = NA, size = 0.6)) +
                 ggplot2::labs(x = "Genomic position (Mb)",
                               y = expression(-log[10](italic(p))))
-            
+        })
+        
+        output$pxg <- plotly::renderPlotly({
             if(nrow(traitmap %>% na.omit()) > 0) {
                 pxgplot <- peaks %>% 
                     dplyr::filter(trait == trt) %>%
@@ -327,17 +345,21 @@ server <- function(input, output) {
                                    panel.grid = element_blank(),
                                    panel.background = ggplot2::element_rect(color = NA, size = 0.6)) +
                     ggplot2::labs(x = "Genotype at QTL", y = trt)
-                    
+                
+                # plotly
+                plotly::ggplotly(pxgplot + aes(text = glue::glue("Strain: {strain}")), tooltip = "text")
+                
             } else {
                 pxgplot <- ggplot2::ggplot(peaks) +
                     geom_blank() +
                     geom_text(x = 0.5, y = 0.5, label = "No QTL")
+                
+                # plotly
+                plotly::ggplotly(pxgplot)
             }
             
-            cowplot::plot_grid(manp, pxgplot, nrow = 2, align = "v", axis = "lr")
         })
-        
-        
+            
         ################# PEAKS DF ################# 
         output$peaks <- DT::renderDataTable({
             traitmap %>%
@@ -357,7 +379,8 @@ server <- function(input, output) {
         tagList(
             h3("QTL plots:"),
             plotly::plotlyOutput("barplot", height = "300px"),
-            shiny::plotOutput("manhatplot", height = "600px"),
+            shiny::plotOutput("manhatplot", height = "300px"),
+            plotly::plotlyOutput("pxg", height = "300px"),
             h3("QTL peaks:"),
             DT::dataTableOutput("peaks")
         )
@@ -499,15 +522,13 @@ server <- function(input, output) {
         # get inputs
         trt <- input$trait_input
         cond <- input$drug_input
-        strainset <- input$set_input
-        # interval <- input$intervals
-        
+
         peaks <- loaddata()[[2]]
         
         # filter data
         traitmap <- peaks %>%
-            dplyr::filter(trait == glue::glue("{cond}.{trt}"),
-                          set == strainset)
+            dplyr::filter(trait == trt,
+                          peak_id == T)
         
         # output
         shiny::selectInput(inputId = "whichqtl", label = "Select QTL:", choices = c("", unique(traitmap$marker)), selected = NULL)
