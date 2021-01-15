@@ -26,6 +26,10 @@ trts <- c('cv.EXT','cv.TOF','f.ad','f.L1','f.L2L3','f.L4','iqr.EXT','iqr.TOF',
           'q25.norm.EXT','q25.TOF','q75.EXT','q75.norm.EXT','q75.TOF','q90.EXT',
           'q90.norm.EXT','q90.TOF','var.EXT','var.TOF')
 
+phenodf <- fst::read_fst("data/96strain_pheno.fst")
+genodf <- readr::read_tsv("~/Dropbox/AndersenLab/LabFolders/Katie/git/GWAS-shiny/data/Genotype_Matrix.tsv") %>%
+    tidyr::gather(strain, allele, -(CHROM:ALT))
+
 
 # Define UI for application
 ui <- fluidPage(
@@ -39,8 +43,6 @@ ui <- fluidPage(
        shiny::fluidRow(
            # conditions
            column(3, shiny::selectInput(inputId = "drug_input", label = "Condition:", choices = sort(drugs), selected = NULL)),
-           # set
-           column(2, shiny::radioButtons(inputId = "set_input", label = "RIAIL set:", choices = c(1, 2), selected = 2, inline = TRUE)),
            # trait
            # columm(3, shiny::uiOutput("trait")),
            # this is not accurate, doesn't have traits for no QTL 
@@ -107,15 +109,15 @@ server <- function(input, output) {
         
         # I guess fst can't read directly from internet... this is my workaround for now.
         tmp_file <- tempfile()
-        fst_url <- glue::glue("https://raw.githubusercontent.com/katiesevans/GWAS-shiny/main/data/mappings/96strain/{d}_pmd.fst")
+        fst_url <- glue::glue("https://raw.githubusercontent.com/katiesevans/GWAS-shiny/main/data/mappings/96strain/{cond}_pmd.fst")
         curl::curl_download(fst_url, tmp_file, mode="wb")
         
         # files
-        annotatedmap <- fst::read_fst(tmp_file) %>%
-            dplyr::distinct()
+        annotatedmap <- fst::read_fst(tmp_file)
+        
+        ## right now it can show eigen on map but not choose it for region pxg
         peaks <- annotatedmap %>%
-            dplyr::filter(peak_id == T) %>%
-            dplyr::distinct()
+            dplyr::filter(peak_id)
         list(annotatedmap, peaks)
         
     })
@@ -218,48 +220,39 @@ server <- function(input, output) {
 
         # filter data
         traitmap <- annotatedmap %>%
-            dplyr::filter(trait == glue::glue("{cond}.{trt}"),
-                          set == strainset)
+            dplyr::filter(trait == trt)
         
-        pheno <- allRIAILsregressed %>%
+        pheno <- phenodf %>%
             dplyr::filter(condition == cond,
                           trait == trt)
-        
-        # drugcross <- linkagemapping::mergepheno(N2xCB4856cross_full2, pheno, strainset)
-        load("data/newcross.Rda")
-        drugcross <- linkagemapping::mergepheno(newcross, pheno, strainset)
-        rm(newcross)
 
         #########
         # Plots #
         #########
         
-        ################### BAR PLOT RIAIL ###################
+        ################### BAR PLOT WI ###################
         output$barplot <- plotly::renderPlotly({
             # riail pheno plot
-            riailset <- drugcross$pheno %>%
-                dplyr::filter(set == strainset)
-            phenodf <- pheno %>%
-                dplyr::filter(strain %in% c(riailset$strain, "N2", "CB4856")) %>%
-                dplyr::mutate(strain_fill = dplyr::case_when(strain == "N2" ~ "n2",
-                                                             strain == "CB4856" ~ "cb",
-                                                             TRUE ~ "RIL")) %>%
+            wipheno <- pheno %>%
                 dplyr::group_by(strain, trait) %>%
-                dplyr::mutate(avg_phen = mean(phenotype, na.rm = T)) %>%
+                dplyr::mutate(avg_phen = mean(phenotype, na.rm = T),
+                              col = dplyr::case_when(strain == "N2" ~ "N2",
+                                                     strain == "CB4856" ~ "CB",
+                                                     TRUE ~ "WI")) %>%
                 dplyr::distinct(strain, trait, .keep_all = T) %>%
                 dplyr::ungroup() %>%
                 dplyr::mutate(norm_pheno = ((avg_phen - min(avg_phen, na.rm = T)) / (max(avg_phen, na.rm = T) - min(avg_phen, na.rm = T)))) %>%
                 dplyr::arrange(norm_pheno)
             
-            phenodf$strain <- factor(phenodf$strain, levels = unique(phenodf$strain))
+            wipheno$strain <- factor(wipheno$strain, levels = unique(wipheno$strain))
             
             # plot
-            barplot <- phenodf %>%
+            barplot <- wipheno %>%
                 ggplot2::ggplot(.) +
-                ggplot2::aes(x = strain, y = norm_pheno, fill = strain_fill, color = strain_fill) +
-                ggplot2::geom_bar(stat = "identity") +
-                ggplot2::scale_fill_manual(values = c("n2" = "orange", "cb" = "blue", "RIL" = "grey")) +
-                ggplot2::scale_color_manual(values = c("n2" = "orange", "cb" = "blue", "RIL" = "grey")) +
+                ggplot2::aes(x = strain, y = norm_pheno) +
+                ggplot2::geom_bar(stat = "identity", fill = col, color = col) +
+                ggplot2::scale_fill_manual(values = c("N2" = "orange", "CB" = "blue", "WI" = "grey")) +
+                ggplot2::scale_color_manual(values = c("N2" = "orange", "CB" = "blue", "WI" = "grey")) +
                 theme_bw(15) +
                 theme(axis.ticks.x = element_blank(),
                       axis.text.x = element_blank(),
@@ -273,34 +266,89 @@ server <- function(input, output) {
             plotly::ggplotly(barplot + aes(text = glue::glue("Strain: {strain}")), tooltip = "text")
         })
         
-        ################# LOD & PXG PLOTS ###################
-        output$lodplot <- shiny::renderPlot({
-            lodplot <- linkagemapping::maxlodplot(traitmap) +
-                theme(plot.title = element_blank())
+        ################# MAN & PXG PLOTS ###################
+        output$manhatplot <- shiny::renderPlot({
+            manp <- traitmap %>%
+                dplyr::filter(CHROM != "MtDNA") %>%
+                dplyr::mutate(aboveEIGEN = dplyr::case_when(aboveBF == T ~ "2",
+                                                            aboveEIGEN == T ~ "1",
+                                                            TRUE ~ "0")) %>%
+                dplyr::distinct(marker, .keep_all = T) %>%
+                ggplot2::ggplot(.) +
+                ggplot2::aes(x = POS/1e6, y = log10p) +
+                ggplot2::scale_color_manual(values = c("0" = "black", "1" = "deeppink2", "2" = "red")) +
+                ggplot2::geom_rect(ggplot2::aes(xmin = startPOS/1e6,    # this is the plot boundary for LD and gene plots
+                                                xmax = endPOS/1e6,    # this is the plot boundary for LD and gene plots
+                                                ymin = 0, 
+                                                ymax = Inf, 
+                                                fill = "palevioletred1"), 
+                                   color = "palevioletred1",fill = "palevioletred1",linetype = 2, alpha=.3)+
+                ggplot2::geom_hline(ggplot2::aes(yintercept = EIGEN), color = "gray", alpha = .75, size = 1, linetype = 2) +
+                ggplot2::geom_hline(ggplot2::aes(yintercept = BF), color = "gray", alpha = .75, size = 1) +
+                ggplot2::geom_point(ggplot2::aes(color= factor(aboveEIGEN)), size = 0.7) +
+                ggplot2::facet_grid( . ~ CHROM, scales = "free_x" , space = "free_x") +
+                ggplot2::theme_bw(12) +
+                ggplot2::theme(
+                    axis.text = ggplot2::element_text(color = "black", face = "bold"),
+                    axis.title = ggplot2::element_text(face = "bold", color = "black"),
+                    strip.text = ggplot2::element_text(face = "bold", color = "black"),
+                    plot.title = ggplot2::element_blank(),
+                    panel.grid = ggplot2::element_blank(),
+                    legend.position = "none",
+                    panel.background = ggplot2::element_rect(color = NA, size = 0.6)) +
+                ggplot2::labs(x = "Genomic position (Mb)",
+                              y = expression(-log[10](italic(p))))
             
             if(nrow(traitmap %>% na.omit()) > 0) {
-                pxgplot <- pxgplot_fake(drugcross, traitmap) +
-                    theme(plot.title = element_blank(),
-                          panel.grid = element_blank())
+                pxgplot <- peaks %>% 
+                    dplyr::filter(trait == trt) %>%
+                    dplyr::left_join(pheno) %>%
+                    dplyr::left_join(genodf) %>%
+                    tidyr::drop_na(allele) %>%
+                    dplyr::mutate(allele = factor(allele, levels = c(-1,1), labels = c("REF","ALT"))) %>% 
+                    dplyr::mutate(norm_pheno = ((phenotype - min(phenotype, na.rm = T)) / (max(phenotype, na.rm = T) - min(phenotype, na.rm = T))),
+                                  phenotype = norm_pheno) %>%
+                    dplyr::group_by(allele) %>%
+                    ggplot()+
+                    aes(x = allele, y = phenotype, fill = allele)+
+                    geom_jitter(size = 0.5, width = 0.1) +
+                    geom_boxplot(alpha = 0.8, outlier.color = NA) +
+                    scale_fill_manual(values = c("REF" = "grey", "ALT" = "palevioletred1")) +
+                    ggplot2::facet_grid(~factor(marker, unique(peaks$marker)), scales = "free") + 
+                    ggplot2::theme_bw(12) + 
+                    ggplot2::theme(axis.text.x = ggplot2::element_text(face = "bold", color = "black"), 
+                                   axis.text.y = ggplot2::element_text(face = "bold", color = "black"), 
+                                   axis.title.x = ggplot2::element_text(face = "bold", color = "black", vjust = -0.3),
+                                   axis.title.y = ggplot2::element_text(face = "bold", color = "black"), 
+                                   strip.text.x = ggplot2::element_text(face = "bold", color = "black"),
+                                   strip.text.y = ggplot2::element_text(face = "bold", color = "black"),
+                                   plot.title = ggplot2::element_blank(), 
+                                   legend.position = "none", 
+                                   panel.grid = element_blank(),
+                                   panel.background = ggplot2::element_rect(color = NA, size = 0.6)) +
+                    ggplot2::labs(x = "Genotype at QTL", y = trt)
+                    
             } else {
-                pxgplot <- ggplot2::ggplot(traitmap) +
+                pxgplot <- ggplot2::ggplot(peaks) +
                     geom_blank() +
                     geom_text(x = 0.5, y = 0.5, label = "No QTL")
             }
             
-            cowplot::plot_grid(lodplot, pxgplot, nrow = 2, align = "v", axis = "lr")
+            cowplot::plot_grid(manp, pxgplot, nrow = 2, align = "v", axis = "lr")
         })
         
         
         ################# PEAKS DF ################# 
         output$peaks <- DT::renderDataTable({
             traitmap %>%
-                na.omit() %>%
-                dplyr::arrange(chr, pos) %>%
-                dplyr::select(marker, lod, var_exp, eff_size, ci_l_pos, ci_r_pos) %>%
-                dplyr::mutate(lod = round(lod, digits = 4),
-                              var_exp = round(var_exp, digits = 4),
-                              eff_size = round(eff_size, digits = 4))
+                dplyr::filter(aboveEIGEN) %>%
+                dplyr::arrange(CHROM, POS) %>%
+                dplyr::mutate(thresh = dplyr::case_when(aboveBF == T ~ "BF",
+                                                        aboveEIGEN == T ~ "EIGEN",
+                                                        TRUE ~ "NS")) %>%
+                dplyr::select(marker, CHROM, POS, log10p, peak_id, thresh, var.exp, startPOS, endPOS) %>%
+                dplyr::mutate(log10p = round(log10p, digits = 4),
+                              var.exp = round(var.exp, digits = 4))
         })
         
         removeModal()
@@ -309,7 +357,7 @@ server <- function(input, output) {
         tagList(
             h3("QTL plots:"),
             plotly::plotlyOutput("barplot", height = "300px"),
-            shiny::plotOutput("lodplot", height = "600px"),
+            shiny::plotOutput("manhatplot", height = "600px"),
             h3("QTL peaks:"),
             DT::dataTableOutput("peaks")
         )
